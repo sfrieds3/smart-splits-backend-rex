@@ -23,6 +23,15 @@ class RexBackendLiveTest(unittest.TestCase):
         session = json.loads(created.stdout)
         session_id = session["session_id"]
         try:
+            # The Rex half forwards keys with this method; check it without typing into a user's pane.
+            written = subprocess.run(
+                ["rex", "--autostart=false", "api", "call", "-s", session_id,
+                 "com.superlogical.terminal.write", json.dumps({
+                     "block_id": session["initial_windows"][0]["block_ids"][0],
+                     "args": {"data": "\u001b[104;7u"},
+                 })], capture_output=True, text=True, check=True, timeout=10,
+            )
+            self.assertEqual(json.loads(written.stdout)["bytes_written"], 8)
             env = dict(os.environ, REX_SESSION=session_id, REX_TEST_SESSION=session_id,
                        REX_BLOCK=session["initial_windows"][0]["block_ids"][0])
             for key in ("TMUX", "TMUX_PANE", "REX_CLIENT"):

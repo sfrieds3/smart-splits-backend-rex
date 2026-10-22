@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The smart-splits.nvim commit whose protocol suite the backend is tested against.
+  SMART_SPLITS_REF: 3629711db18279843618fda2e908700dcdc4b040
+
+jobs:
+  neovim:
+    name: Neovim ${{ matrix.neovim }} (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        neovim: [v0.11.0, stable, nightly]
+        include:
+          - os: macos-latest
+            neovim: stable
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.neovim == 'nightly' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: mrjones2014/smart-splits.nvim
+          ref: ${{ env.SMART_SPLITS_REF }}
+          path: .deps/smart-splits.nvim
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.neovim }}
+      - name: Backend and protocol tests
+        env:
+          SMART_SPLITS_PATH: ${{ github.workspace }}/.deps/smart-splits.nvim
+          REQUIRE_SMART_SPLITS: "1"
+        run: nvim --headless -u NONE -l tests/backend.lua
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: JohnnyMorganz/stylua-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          version: 2.6.0
+          args: --check lua tests
+
+  release-script:
+    name: Release script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m unittest tests.test_release -v
+
+  # Tags and releases each push to main that has a feat, fix or breaking commit since the last tag.
+  release:
+    name: Release
+    needs: [neovim, lint, release-script]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(.github/scripts/next-version.sh)
+          if [[ -z $version ]]; then
+            echo "No feat, fix or breaking commits since the last release; nothing to release."
+            exit 0
+          fi
+          last=$(git tag --merged HEAD --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
+          git log --format='- %s (%h)' "${last:+$last..}HEAD" > notes.md
+          gh release create "v$version" --target "$GITHUB_SHA" --title "v$version" --notes-file notes.md

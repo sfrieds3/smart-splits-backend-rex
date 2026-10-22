@@ -16,7 +16,7 @@ smart-splits v3 moved every multiplexer out into its own plugin, built against i
 
 ## Install
 
-Two halves have to agree: this plugin, which handles the keys while Neovim has them, and a few Rex key bindings, which handle them everywhere else.
+Two halves have to agree, and both are in this repository: the Neovim plugin, which handles the keys while Neovim has them, and a module for Rex's config, which handles them everywhere else.
 
 ### Neovim
 
@@ -56,41 +56,55 @@ mux = { backend = { "smart-splits-backend-tmux", "smart-splits-backend-rex" } },
 
 ### Rex
 
-Bind the same keys in `~/.config/rex/init.lua`. When Neovim is in the focused pane, the binding hands the key to it, and smart-splits takes over; anywhere else, Rex moves between its own panes:
+The `rex/` folder of this repository is a module for Rex's Lua config. Its handlers check what's running in the focused pane. If it's Neovim, Vim, tmux, SSH or mosh, they leave the key alone so it reaches that program and smart-splits takes over. Otherwise they move between, resize or cycle Rex's own panes. In `~/.config/rex/init.lua`:
 
 ```lua
-local editors = { nvim = true, vim = true }
-
-local function in_editor(ctx)
-  local process = rex.call("com.superlogical.terminal.process", {
-    session_id = ctx.session_id,
-    block_id = ctx.block_id,
-    args = {},
-  })
-  local foreground = process and process.foreground
-  local name = type(foreground) == "table" and type(foreground.name) == "string" and foreground.name
-  return name and editors[name:match("[^/]+$")] or false
-end
+-- Any checkout of this repository, such as the one your Neovim plugin manager installed:
+-- ~/.local/share/nvim/site/pack/core/opt/smart-splits-backend-rex for vim.pack, or
+-- ~/.local/share/nvim/lazy/smart-splits-backend-rex for lazy.nvim.
+local root = os.getenv("HOME") .. "/.local/share/nvim/site/pack/core/opt/smart-splits-backend-rex"
+package.path = root .. "/rex/?.lua;" .. package.path
+local splits = require("smart-splits-backend-rex")
 
 for key, direction in pairs({ h = "left", j = "down", k = "up", l = "right" }) do
-  rex.bind("ctrl+" .. key, function(ctx)
-    if not ctx.block_id or in_editor(ctx) then
-      return false -- unhandled: the key goes to the pane
-    end
-    return rex.call("session.focus_direction", {
-      session_id = ctx.session_id,
-      direction = direction,
-      wrap = true,
-    }) ~= nil
-  end)
+  rex.bind("ctrl+" .. key, splits.focus(direction))
+  rex.bind("alt+" .. key, splits.resize(direction))
 end
+rex.bind("alt+[", splits.cycle("previous"))
+rex.bind("alt+]", splits.cycle("next"))
 ```
 
-Returning `false` leaves a key unhandled, so it reaches the program in the pane. A fuller version can:
-- check the process's ancestors as well as the foreground process,
-- pass keys to tmux, SSH and mosh too,
-- resize with `session.resize_pane`, the same way the backend does,
-- bind a second set of keys that writes the Neovim key sequences into the pane (`com.superlogical.terminal.write`), for terminals where those chords are taken.
+Use the same keys as the Neovim mappings, so the key does the same thing on either side of the boundary.
+
+| Handler | At a shell | When a program in the pane owns the keys |
+| --- | --- | --- |
+| `focus(direction, alias)` | moves to the next pane, wrapping around | leaves the key alone, or with `alias` types `Ctrl+Alt+h/j/k/l` |
+| `resize(direction, alias)` | moves the border by `resize_amount` cells | leaves the key alone, or with `alias` types `Shift+F1`–`F4` |
+| `cycle(direction, alias)` | goes to the next or previous pane | leaves the key alone, or with `alias` types `Alt+[` / `Alt+]` |
+
+A program owns the keys when it, or any process it was started from, is one of those programs. Each handler returns `false` when it leaves a key alone, which is how Rex knows to send the key on to the pane.
+
+`alias` is for a second set of keys that a terminal or desktop might otherwise take, such as `Cmd+Alt+Arrows` on macOS. Bind those with `alias = true` and map the forwarded sequences in Neovim:
+
+```lua
+rex.bind("cmd+alt+left", splits.focus("left", true)) -- Neovim receives <C-M-h>
+```
+
+In a Rex key mode, bindings must name actions, so wrap the handler in one:
+
+```lua
+rex.action({ name = "focus_left", title = "Focus Left Pane", run = splits.focus("left") })
+rex.bind("prefix/h", "focus_left")
+```
+
+Options, all optional:
+
+```lua
+splits.setup({
+  passthrough = { "helix" }, -- more programs that get the keys, besides nvim, vim, tmux, ssh and mosh
+  resize_amount = 3,         -- cells per resize at a shell
+})
+```
 
 ## Behaviour
 
@@ -124,19 +138,20 @@ require("smart-splits-backend-rex").setup({
 ## Troubleshooting
 
 - **The keys never leave Neovim.** Check `:checkhealth smart-splits`: Neovim needs `REX_SESSION`, `REX_BLOCK` and `rex` on its `PATH`. Inside tmux, the tmux backend wins if it's listed first.
-- **The keys never reach Neovim.** The Rex binding is handling them. Check that its editor test matches how Neovim shows up in the pane's process list (`rex block call process`).
-- **Over SSH.** A remote Neovim has no local Rex. Pass the keys through to SSH in the Rex binding, and use the remote side's own multiplexer.
+- **The keys never reach Neovim.** The Rex handler doesn't recognise the program. `rex block call process` shows how it appears in the pane's process list; add a wrapper's name with `setup({ passthrough = { … } })`.
+- **Over SSH.** The Rex handlers pass the keys to SSH, but a remote Neovim has no local Rex, so it can only move between its own windows or a multiplexer on the remote side.
 
 ## Development
 
 ```sh
-nvim --headless -u NONE -l tests/backend.lua                     # mocked Rex calls, no server needed
+nvim --headless -u NONE -l tests/backend.lua                     # Neovim half, mocked Rex calls
+lua tests/rex.lua                                                # Rex half, stubbed rex API
 RUN_REX_LIVE_TESTS=1 python3 -m unittest tests.test_live -v      # against a running Rex server
-stylua --check lua tests
+stylua --check lua rex tests
 python3 -m unittest tests.test_release -v                        # the release workflow's version bump
 ```
 
-`tests/backend.lua` also runs smart-splits' protocol conformance suite, and checks how backends are chosen, whenever smart-splits.nvim is installed or `SMART_SPLITS_PATH` points to it. CI pins a smart-splits commit and runs the suite on Neovim 0.11, stable and nightly. The live test creates its own detached Rex session, runs real moves, resizes and splits in it, and deletes it afterwards.
+`tests/backend.lua` also runs smart-splits' protocol conformance suite, and checks how backends are chosen, whenever smart-splits.nvim is installed or `SMART_SPLITS_PATH` points to it. CI pins a smart-splits commit and runs the suite on Neovim 0.11, stable and nightly. The live test creates its own detached Rex session, runs real moves, resizes and splits in it, checks the key forwarding call the Rex half uses, and deletes the session afterwards.
 
 Each push to `main` with a `feat`, `fix` or breaking commit is tagged and released, following [Conventional Commits](https://www.conventionalcommits.org). Before 1.0, a breaking change bumps the minor version.
 

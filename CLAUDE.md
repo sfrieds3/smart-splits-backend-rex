@@ -7,7 +7,8 @@ A Rex backend for smart-splits.nvim v3 (backend protocol 3.0.0). See `README.md`
 - `lua/smart-splits-backend-rex/init.lua`: the protocol surface: `name`, `protocol_version`, `setup`, `detect`, `move`, `resize`, `health`, plus the non-protocol `cycle`.
 - `lua/smart-splits-backend-rex/rex.lua`: everything that talks to Rex, through `rex --autostart=false --timeout … api call -s $REX_SESSION …` via `vim.system`.
 - `lua/smart-splits-backend-rex/layout.lua`: pure helpers over `session.view` layout trees.
-- `tests/backend.lua`: mocks `vim.system`, so it needs no Rex server, and runs smart-splits' protocol suite when `SMART_SPLITS_PATH` or an installed smart-splits.nvim is available. `tests/live.lua` with `tests/test_live.py` is the opt-in test against a running Rex server.
+- `rex/smart-splits-backend-rex.lua`: the Rex half, for Rex's server Lua (gopher-lua, Lua 5.1, the `rex` global): `setup`, and `focus`/`resize`/`cycle` handlers to bind. Keep it plain Lua 5.1 with no Neovim APIs.
+- `tests/backend.lua`: mocks `vim.system`, so it needs no Rex server, and runs smart-splits' protocol suite when `SMART_SPLITS_PATH` or an installed smart-splits.nvim is available. `tests/rex.lua` covers the Rex half with a stubbed `rex` global (it uses `dofile`, since `require` under `nvim -l` would find the Neovim module of the same name). `tests/live.lua` with `tests/test_live.py` is the opt-in test against a running Rex server.
 
 ## Behaviour to keep
 
@@ -15,13 +16,15 @@ A Rex backend for smart-splits.nvim v3 (backend protocol 3.0.0). See `README.md`
 - Every Rex call is scoped to `$REX_SESSION`, bounded by `timeout_ms`, and acts only when Rex's active window focuses this Neovim's `$REX_BLOCK`.
 - A move counts as done only if the session revision moved on and focus actually left this pane.
 - Supports Neovim 0.11 and newer, the same as smart-splits v3.
-- The Rex half of the setup (key bindings in Rex's config) is documented in the README; keep that example working with the current Rex Lua API.
+- Rex handlers return `false` whenever they leave a key alone, including on missing or failing process data, so the key reaches the pane.
+- Keep the README's Rex example loading cleanly with `rex config check`.
 
 ## Checks
 
 ```sh
 nvim --headless -u NONE -l tests/backend.lua
-stylua --check lua tests
+lua tests/rex.lua
+stylua --check lua rex tests
 python3 -m unittest tests.test_release -v
 RUN_REX_LIVE_TESTS=1 python3 -m unittest tests.test_live -v   # needs a running Rex server; never touches the user's sessions
 ```
